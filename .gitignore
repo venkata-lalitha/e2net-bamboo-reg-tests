@@ -1,0 +1,21 @@
+# Real credentials - never commit.
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Backups created by src/fixer.py
+*.bak
+
+# Test/run output
+results/
+
+# IDE-specific project files
+.idea/
+
+# Generated verification artifacts (decompiled classes, fetched patch jars)
+_verify_e2na/
+_verify_e2netio/
+_verify_scenario/
+_patch_*.jar

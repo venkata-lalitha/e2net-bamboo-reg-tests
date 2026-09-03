@@ -1,0 +1,159 @@
+# ============================================================================
+# Bamboo Regression Agent - Configuration
+# Fill in the TODO fields below. Do NOT commit this file with real secrets.
+# Prefer environment variables for secrets (see *_env fields).
+# ============================================================================
+
+bamboo:
+  # Base REST URL, derived from https://bamboo.dev.e2open.com/browse/<buildResultKey>
+  url: "https://bamboo.dev.e2open.com/rest/api/latest"
+
+  # auth_method: "token" | "basic"
+  #   token -> uses a Personal Access Token from env var named in token_env
+  #   basic -> uses username/password from env vars named below (only for
+  #            this plan, per user request)
+  auth_method: "basic"
+
+  # Personal Access Token env var (used only when auth_method == "token").
+  token_env: "BAMBOO_TOKEN"
+
+  # Username/password env vars (used only when auth_method == "basic").
+  # Set them before running, e.g.:
+  #   $env:BAMBOO_USERNAME = "<your bamboo username>"
+  #   $env:BAMBOO_PASSWORD = "<your bamboo password>"
+  username_env: "BAMBOO_USERNAME"
+  password_env: "BAMBOO_PASSWORD"
+
+  # Plans (jobs) to check/run, in the order they should be processed.
+  # "key" is the Bamboo PLAN key (no build number), e.g. for build result
+  # E2NETS-E2NETV3083-1086 the plan key is E2NETS-E2NETV3083.
+  # https://bamboo.dev.e2open.com/browse/E2NETS-E2NETV3083 is the actual
+  # plan under which build numbers appear - confirmed as the real one to
+  # monitor (E2NETS-E2NETV3083-MBJ/-EJBTST/-FEAT were earlier guesses at
+  # sub-job keys and are not used).
+  plans:
+    - key: "E2NETS-E2NETV3083"
+
+  # If true, only process plans whose latest Bamboo build is already failed.
+  # If false, run every plan in the list regardless of last known status.
+  only_if_failed: true
+
+ssh:
+  hosts:
+    - dev10091.dev.e2open.com
+    - dev10092.dev.e2open.com
+  username: vlalitha
+
+  # auth_method: "key" | "password" | "agent"
+  #   key      -> uses key_path (or default ~/.ssh/id_rsa)
+  #   password -> reads password from env var named in password_env
+  #   agent    -> uses local ssh-agent / already-configured passwordless SSH
+  auth_method: "password"
+  key_path: "~/.ssh/id_rsa"
+  password_env: "SSH_PASSWORD"
+
+  # Host that vlalitha/SSH_PASSWORD can actually log into directly. Some
+  # hosts (e.g. dev10092) reject that password (AD-backed auth rejects it
+  # for reasons TBD), but eoadmin has passwordless SSH trust from
+  # jump_host to every host, so docker cp/restart hop through here instead
+  # of connecting to the target host directly.
+  jump_host: "dev10091.dev.e2open.com"
+
+repo:
+  # Local checkouts of the E2net application source, where fixes are
+  # applied. source_locator searches each in order to find a failing
+  # test's class; container_base_path is where that repo's source lives
+  # inside the docker containers, used to build the `docker cp` destination.
+  paths:
+    - name: "e2net-platform"
+      local_path: "C:/git/e2net/platform"
+      # Base confirmed as /e2open/app/ - CONFIRM the exact subfolder below.
+      container_base_path: "/e2open/app/e2net/webapps/e2net.war/WEB-INF/lib"
+    - name: "e2net-commons"
+      local_path: "C:/git/e2net_common"
+      # Base confirmed as /e2open/app/ - CONFIRM the exact subfolder below.
+      container_base_path: "/e2open/app"
+    - name: "e2net-test-service"
+      local_path: "C:/git/e2net-tests/e2net-test-service"
+      # Base confirmed as /e2open/app/ - the sample remote_command's testdir
+      # references /e2open/app/e2net-gateway-integtest, which may be this
+      # repo's actual container folder name instead of "e2net-test-service".
+      # CONFIRM which one is correct.
+      container_base_path: "/e2open/app"
+
+test_execution:
+  # Command run on the remote host to execute one plan's regression suite.
+  # {plan_key} is substituted at runtime; {host} is whichever host the
+  # command actually runs on (so buildhost always matches); {test_suite} is
+  # prompted for interactively by src/main.py (or passed via --suite /
+  # the webhook payload's testSuite field) since it changes per run.
+  remote_command: >-
+    /e2open/home/cmbuild/regtests/E2NET/runenginetest-withport.sh
+    testdir=/e2open/app/e2net-gateway-integtest/tests
+    testlog=/e2open/var/log/e2na/test.log
+    buildhost={host}
+    timeout=600
+    testsuite={test_suite}
+
+  # Not used by the main workflow anymore - failing tests are pulled
+  # directly from Bamboo's own test-result API instead of parsed from a
+  # remote results directory, since runenginetest-withport.sh's testlog
+  # is a plain log rather than JUnit XML. Kept only for SshRunner.fetch_results
+  # if you want to pull raw logs manually; safe to leave as-is.
+  remote_results_dir: "/tmp"
+
+  # Local directory (on this machine) where results are pulled down to.
+  local_results_dir: "./results/{plan_key}"
+
+fix:
+  # If true, the agent will edit files under the repos in repo.paths for
+  # high-confidence, rule-matched issues (see src/fix_rules.py).
+  auto_apply: true
+
+  # Keep a .bak copy next to any file the agent modifies.
+  create_backup: true
+
+  # After applying a fix, re-run the plan up to this many extra times
+  # to verify the fix resolves the failure.
+  max_iterations_per_plan: 2
+
+deploy:
+  # If true, every auto-applied fix is shipped to the containers running on
+  # each SSH host via `docker cp` (through a scp/sftp upload to a remote
+  # tmp dir first) so the next re-run of the plan picks up the change.
+  enabled: true
+
+  # Which containers run on each SSH host - a patched file is docker cp'd
+  # into every container listed for the host that ran the plan.
+  host_containers:
+    dev10091.dev.e2open.com:
+      - e2net
+    dev10092.dev.e2open.com:
+      - e2netio
+      - e2na
+      - scenario
+
+  # Scratch directory on the SSH host used to stage files before `docker cp`.
+  remote_tmp_dir: "/tmp/bamboo-reg-agent-deploy"
+
+webhook:
+  # If true, `python src/webhook_listener.py` starts an HTTP listener that
+  # Bamboo can POST to when a build finishes, so the agent runs automatically
+  # instead of requiring someone to run src/main.py by hand.
+  enabled: false
+
+  # Bind address/port for the listener. Keep this on localhost/private
+  # network and put a reverse proxy in front if Bamboo needs to reach it
+  # from elsewhere - this endpoint can trigger code changes, so it must
+  # not be exposed unauthenticated to the internet.
+  host: "127.0.0.1"
+  port: 8787
+
+  # Shared secret Bamboo's webhook must send back as header
+  # `X-Webhook-Token`. Required whenever webhook.enabled is true. Set it
+  # before starting the listener, e.g.:
+  #   $env:WEBHOOK_TOKEN = "<random shared secret>"
+  token_env: "WEBHOOK_TOKEN"
+
+reporting:
+  report_path: "./results/root_cause_report.md"
